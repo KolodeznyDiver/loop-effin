@@ -1,6 +1,6 @@
-{-# LANGUAGE DataKinds, DeriveDataTypeable, DeriveFunctor, FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances, LambdaCase, LiberalTypeSynonyms             #-}
-{-# LANGUAGE MultiParamTypeClasses, NoMonomorphismRestriction, RankNTypes   #-}
+{-# LANGUAGE DataKinds, FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances, LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses, RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables, TypeFamilies, TypeOperators               #-}
 {-# LANGUAGE UndecidableInstances                                           #-}
 module Control.Effect.Loop
@@ -11,19 +11,26 @@ module Control.Effect.Loop
         repeatLoop, iterateLoop) where
 import Control.Effect
 import Control.Monad  (when)
-import Data.Data      (Typeable)
 
 -- | @Loop c e@ indicates an effect with ability to 'continue' with @c@ or 'exit' with @e@.
 newtype Loop c e a
   = Loop (forall r. (c -> r) -> (e -> r) -> (a -> r) -> r)
-  deriving (Typeable, Functor)
 
 type instance Is Loop f = IsLoop f
 
 type family IsLoop f where
-  IsLoop (Loop c e) = True
-  IsLoop f          = False
+  IsLoop (Loop c e ) = 'True
+  IsLoop f           = 'False
 
+class MemberEffect Loop (Loop c e) l => EffectLoop c e l
+instance MemberEffect Loop (Loop c e) l => EffectLoop c e l
+
+data LoopState c e a = ContinueWith c
+                       | ExitWith e
+                       | Return a
+--                        deriving (Read, Show, Eq, Ord)
+
+  
 -- | Lift a CPS style computation with continuation and exit handler to the 'Effect' monad.
 loop :: EffectLoop c e l => (forall r. (c -> r) -> (e -> r) -> (a -> r) -> r) -> Effect l a
 loop f = send $ Loop f
@@ -39,22 +46,14 @@ toCPS st = Loop $ \c2r e2r a2r ->
     ExitWith     e -> e2r e
     Return       a -> a2r a
 
-data LoopState c e a = ContinueWith c
-                     | ExitWith e
-                     | Return a
-                       deriving (Read, Show, Eq, Ord)
-
 loop' :: EffectLoop c e l => LoopState c e a -> Effect l a
 loop' = send . toCPS
 {-# INLINE loop' #-}
 
 stepLoop :: Effect (Loop c e :+ l) c -> (c -> Effect l e) -> Effect l e
-stepLoop act cont = eliminate cont handle act
+stepLoop act cont = eliminate cont (handle cont) act
   where
-    handle (Loop f) = f cont return id
-
-class MemberEffect Loop (Loop c e) l => EffectLoop c e l
-instance MemberEffect Loop (Loop c e) l => EffectLoop c e l
+    handle c (Loop f) = f c return 
 
 continueWith :: forall c e l a. EffectLoop c e l => c -> Effect l a
 continueWith = loop' . ContinueWith
@@ -98,14 +97,14 @@ doWhile body cond = looper
 once :: Effect (Loop a a :+ l) a -> Effect l a
 once body = eliminate return handler body
   where
-    handler (Loop f) = f return return id
+    handler (Loop f) = f return return -- id
 {-# INLINE once #-}
 
 repeatLoop :: Effect (Loop c e :+ l) a -> Effect l e
 repeatLoop body = looper
   where
-    looper = eliminate (const looper) handler body
-    handler (Loop f) = f (const looper) return id
+    looper = eliminate (const looper) (handler (const looper)) body
+    handler c (Loop f) = f c return -- id
 {-# INLINE repeatLoop #-}
 
 iterateLoop :: c -> (c -> Effect (Loop c e :+ l) c) -> Effect l e
